@@ -8,5 +8,5 @@ Homepage: https://github.com/ask/kombu
 
 Package: python-kombu
 Architecture: all
-Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.4), python-anyjson (>= 0.3.1), python-ampqlib (>= 1.0)
+Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.4), python-anyjson (>= 0.3.1), python-amqplib (>= 1.0)
 Description: Messaging Framework for Python.
