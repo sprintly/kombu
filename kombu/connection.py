@@ -17,24 +17,20 @@ import socket
 
 from contextlib import contextmanager
 from copy import copy
-from functools import wraps
+from functools import partial, wraps
 from itertools import count
+from urllib import quote
 from Queue import Empty
 # jython breaks on relative import for .exceptions for some reason
 # (Issue #112)
 from kombu import exceptions
 from .transport import get_transport_cls
-from .utils import retry_over_time
+from .utils import cached_property, retry_over_time
 from .utils.compat import OrderedDict, LifoQueue as _LifoQueue
 from .utils.url import parse_url
 
 _LOG_CONNECTION = os.environ.get("KOMBU_LOG_CONNECTION", False)
 _LOG_CHANNEL = os.environ.get("KOMBU_LOG_CHANNEL", False)
-
-#: Connection info -> URI
-URI_FORMAT = """\
-%(transport)s://%(userid)s@%(hostname)s%(port)s/%(virtual_host)s\
-"""
 
 __all__ = ["parse_url", "BrokerConnection", "Resource",
            "ConnectionPool", "ChannelPool"]
@@ -73,8 +69,6 @@ class BrokerConnection(object):
             >>> conn.release()
 
     """
-    URI_FORMAT = URI_FORMAT
-
     port = None
     virtual_host = "/"
     connect_timeout = 5
@@ -84,7 +78,7 @@ class BrokerConnection(object):
     _default_channel = None
     _transport = None
     _logger = None
-    skip_uri_transports = set(["sqlalchemy", "sqlakombu.transport.Transport"])
+    uri_passthrough = set(["sqla", "sqlalchemy"])
 
     def __init__(self, hostname="localhost", userid=None,
             password=None, virtual_host=None, port=None, insist=False,
@@ -96,9 +90,12 @@ class BrokerConnection(object):
                   "port": port, "insist": insist, "ssl": ssl,
                   "transport": transport, "connect_timeout": connect_timeout,
                   "login_method": login_method}
-        if hostname and "://" in hostname \
-                and transport not in self.skip_uri_transports:
-            params.update(parse_url(hostname))
+        if hostname and "://" in hostname:
+            if '+' in hostname[:hostname.index("://")]:
+                # e.g. sqla+mysql://root:masterkey@localhost/
+                params["transport"], params["hostname"] = hostname.split('+')
+            else:
+                params.update(parse_url(hostname))
         self._init_params(**params)
 
         # backend_cls argument will be removed shortly.
@@ -364,6 +361,9 @@ class BrokerConnection(object):
         return hash("|".join(map(str, self.info().itervalues())))
 
     def as_uri(self, include_password=False):
+        if self.transport_cls in self.uri_passthrough:
+            return self.transport_cls + '+' + self.hostname
+        quoteS = partial(quote, safe="")   # strict quote
         fields = self.info()
         port = fields["port"]
         userid = fields["userid"]
@@ -371,11 +371,11 @@ class BrokerConnection(object):
         transport = fields["transport"]
         url = "%s://" % transport
         if userid:
-            url += userid
+            url += quoteS(userid)
             if include_password and password:
-                url += ':' + password
+                url += ':' + quoteS(password)
             url += '@'
-        url += fields["hostname"]
+        url += quoteS(fields["hostname"])
 
         # If the transport equals 'mongodb' the
         # hostname contains a full mongodb connection
@@ -383,7 +383,7 @@ class BrokerConnection(object):
         if port and transport != "mongodb":
             url += ':' + str(port)
 
-        url += '/' + fields["virtual_host"]
+        url += '/' + quote(fields["virtual_host"])
         return url
 
     def Pool(self, limit=None, preload=None):
@@ -568,6 +568,13 @@ class BrokerConnection(object):
         if self._transport is None:
             self._transport = self.create_transport()
         return self._transport
+
+    @cached_property
+    def manager(self):
+        return self.transport.manager
+
+    def get_manager(self, *args, **kwargs):
+        return self.transport.get_manager(*args, **kwargs)
 
     @property
     def connection_errors(self):
